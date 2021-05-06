@@ -62,18 +62,6 @@ export enum SigningScheme {
 export type EcdsaSigningScheme = SigningScheme.EIP712 | SigningScheme.ETHSIGN;
 
 /**
- * Additional ECDSA signing schemes supported by the library that get converted
- * to an underlying {@link EcdsaSigningScheme}.
- */
-export enum EcdsaSigningSchemeEx {
-  /**
-   * Force the use of `personal_sign` instead of `eth_sign` for wallets that
-   * don't follow standards. Otherwise, works as {@link SigningScheme.ETHSIGN}.
-   */
-  PERSONALSIGN = 0xbadc0de,
-}
-
-/**
  * The signature of an order.
  */
 export type Signature = EcdsaSignature | Eip1271Signature | PreSignSignature;
@@ -135,39 +123,42 @@ export interface PreSignSignature {
 }
 
 async function ecdsaSignTypedData(
-  ecdsaScheme: EcdsaSigningScheme | EcdsaSigningSchemeEx,
+  scheme: EcdsaSigningScheme,
   owner: Signer,
   domain: TypedDataDomain,
   types: TypedDataTypes,
   data: Record<string, unknown>,
-): Promise<EcdsaSignature> {
-  let scheme: EcdsaSignature["scheme"];
+  personalSignPassword?: string,
+): Promise<string> {
   let signature: string;
 
-  switch (ecdsaScheme) {
+  switch (scheme) {
     case SigningScheme.EIP712:
       if (!isTypedDataSigner(owner)) {
         throw new Error("signer does not support signing typed data");
       }
-      scheme = SigningScheme.EIP712;
+      if (personalSignPassword !== undefined) {
+        throw new Error("password not supported for signing typed data");
+      }
+
       signature = await owner._signTypedData(domain, types, data);
       break;
     case SigningScheme.ETHSIGN:
-      scheme = SigningScheme.ETHSIGN;
-      signature = await owner.signMessage(
-        ethers.utils.arrayify(hashTypedData(domain, types, data)),
-      );
-      break;
-    case EcdsaSigningSchemeEx.PERSONALSIGN:
-      if (!isJsonRpcSignerLike(owner)) {
-        throw new Error("signer does not support raw JSON RPC requests");
+      if (personalSignPassword === undefined) {
+        signature = await owner.signMessage(
+          ethers.utils.arrayify(hashTypedData(domain, types, data)),
+        );
+      } else {
+        if (!isJsonRpcSignerLike(owner)) {
+          throw new Error("signer does not support raw JSON RPC requests");
+        }
+
+        signature = await owner.provider.send("personal_sign", [
+          ethers.utils.hexlify(hashTypedData(domain, types, data)),
+          await owner.getAddress(),
+          personalSignPassword,
+        ]);
       }
-      scheme = SigningScheme.ETHSIGN;
-      signature = await owner.provider.send("personal_sign", [
-        ethers.utils.hexlify(hashTypedData(domain, types, data)),
-        await owner.getAddress(),
-        "",
-      ]);
       break;
     default:
       throw new Error("invalid signing scheme");
@@ -176,11 +167,7 @@ async function ecdsaSignTypedData(
   // Passing the signature through split/join to normalize the `v` byte.
   // Some wallets do not pad it with `27`, which causes a signature failure
   // `splitSignature` pads it if needed, and `joinSignature` simply puts it back together
-  const signatureData = ethers.utils.joinSignature(
-    ethers.utils.splitSignature(signature),
-  );
-
-  return { scheme, data: signatureData };
+  return ethers.utils.joinSignature(ethers.utils.splitSignature(signature));
 }
 
 /**
@@ -195,21 +182,28 @@ async function ecdsaSignTypedData(
  * @param owner The owner for the order used to sign.
  * @param scheme The signing scheme to use. See {@link SigningScheme} for more
  * details.
+ * @param personalSignPassword Optional password used to sign with
+ * `personal_sign` instead of `eth_sign`.
  * @return Encoded signature including signing scheme for the order.
  */
-export function signOrder(
+export async function signOrder(
   domain: TypedDataDomain,
   order: Order,
   owner: Signer,
-  scheme: EcdsaSigningScheme | EcdsaSigningSchemeEx,
+  scheme: EcdsaSigningScheme,
+  personalSignPassword?: string,
 ): Promise<EcdsaSignature> {
-  return ecdsaSignTypedData(
+  return {
     scheme,
-    owner,
-    domain,
-    { Order: ORDER_TYPE_FIELDS },
-    normalizeOrder(order),
-  );
+    data: await ecdsaSignTypedData(
+      scheme,
+      owner,
+      domain,
+      { Order: ORDER_TYPE_FIELDS },
+      normalizeOrder(order),
+      personalSignPassword,
+    ),
+  };
 }
 
 /**
@@ -221,21 +215,28 @@ export function signOrder(
  * @param owner The owner for the order used to sign.
  * @param scheme The signing scheme to use. See {@link SigningScheme} for more
  * details.
+ * @param personalSignPassword Optional password used to sign with
+ * `personal_sign` instead of `eth_sign`.
  * @return Encoded signature including signing scheme for the cancellation.
  */
-export function signOrderCancellation(
+export async function signOrderCancellation(
   domain: TypedDataDomain,
   orderUid: BytesLike,
   owner: Signer,
-  scheme: EcdsaSigningScheme | EcdsaSigningSchemeEx,
+  scheme: EcdsaSigningScheme,
+  personalSignPassword?: string,
 ): Promise<EcdsaSignature> {
-  return ecdsaSignTypedData(
+  return {
     scheme,
-    owner,
-    domain,
-    { OrderCancellation: CANCELLATION_TYPE_FIELDS },
-    { orderUid },
-  );
+    data: await ecdsaSignTypedData(
+      scheme,
+      owner,
+      domain,
+      { OrderCancellation: CANCELLATION_TYPE_FIELDS },
+      { orderUid },
+      personalSignPassword,
+    ),
+  };
 }
 
 /**

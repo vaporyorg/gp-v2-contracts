@@ -6,7 +6,6 @@ import { Wallet, providers } from "ethers";
 import { ethers, waffle } from "hardhat";
 
 import {
-  EcdsaSigningSchemeEx,
   SigningScheme,
   signOrderCancellation,
   hashOrderCancellation,
@@ -31,7 +30,7 @@ const patchedSignMessageBuilder = (key: SigningKey) => async (
   );
 };
 
-function patchSignerWithPersonalSign(signer: Wallet) {
+function patchSignerWithPersonalSign(signer: Wallet, expectedPassword: string) {
   const provider = signer.provider as providers.JsonRpcProvider;
 
   // The Hardhat `ethers` signer does not support `personal_sign`, so patch it
@@ -41,7 +40,7 @@ function patchSignerWithPersonalSign(signer: Wallet) {
   provider.send = (method: string, params: unknown[]) => {
     if (method === "personal_sign") {
       const [message, address, password] = params;
-      expect(password).to.not.be.undefined;
+      expect(password).to.equal(expectedPassword);
       return send("eth_sign", [address, message]);
     }
     return send(method, params);
@@ -71,9 +70,10 @@ describe("signOrder", () => {
     }
   });
 
-  it.only("should produce the same signature with `eth_sign` and `personal_sign`", async () => {
+  it("should produce the same signature with `eth_sign` and `personal_sign`", async () => {
     const [signer] = waffle.provider.getWallets();
-    patchSignerWithPersonalSign(signer);
+    const password = "you shall not pass!";
+    patchSignerWithPersonalSign(signer, password);
 
     const domain = { name: "test" };
 
@@ -87,7 +87,8 @@ describe("signOrder", () => {
       domain,
       SAMPLE_ORDER,
       signer,
-      EcdsaSigningSchemeEx.PERSONALSIGN,
+      SigningScheme.ETHSIGN,
+      password,
     );
 
     expect(ethsignSignature).to.equal(personalsignSignature);
