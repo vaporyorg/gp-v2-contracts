@@ -36,3 +36,27 @@ export interface TypedDataSigner extends Signer {
 export function isTypedDataSigner(signer: Signer): signer is TypedDataSigner {
   return "_signTypedData" in signer;
 }
+
+/**
+ * A provider resembling a {@link ethers.providers.JsonRpcProvider}.
+ */
+export interface JsonRpcProviderLike extends ethers.providers.Provider {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  send(method: string, params: unknown[]): Promise<any>;
+}
+
+/**
+ * A signer resembling a {@link ethers.providers.JsonRpcSigner}.
+ */
+export interface JsonRpcSignerLike extends Signer {
+  provider: JsonRpcProviderLike;
+}
+
+/**
+ * Checks whether the specified signer is a {@link JsonRpcSignerLike}.
+ */
+export function isJsonRpcSignerLike(
+  signer: Signer,
+): signer is JsonRpcSignerLike {
+  return signer.provider !== undefined && "send" in signer.provider;
+}

@@ -8,10 +8,11 @@ import {
   hashTypedData,
 } from "./order";
 import {
-  TypedDataTypes,
   SignatureLike,
-  isTypedDataSigner,
   TypedDataDomain,
+  TypedDataTypes,
+  isJsonRpcSignerLike,
+  isTypedDataSigner,
 } from "./types/ethers";
 
 /**
@@ -59,6 +60,18 @@ export enum SigningScheme {
 }
 
 export type EcdsaSigningScheme = SigningScheme.EIP712 | SigningScheme.ETHSIGN;
+
+/**
+ * Additional ECDSA signing schemes supported by the library that get converted
+ * to an underlying {@link EcdsaSigningScheme}.
+ */
+export enum EcdsaSigningSchemeEx {
+  /**
+   * Force the use of `personal_sign` instead of `eth_sign` for wallets that
+   * don't follow standards. Otherwise, works as {@link SigningScheme.ETHSIGN}.
+   */
+  PERSONALSIGN = 0xbadc0de,
+}
 
 /**
  * The signature of an order.
@@ -122,25 +135,39 @@ export interface PreSignSignature {
 }
 
 async function ecdsaSignTypedData(
-  scheme: EcdsaSigningScheme,
+  ecdsaScheme: EcdsaSigningScheme | EcdsaSigningSchemeEx,
   owner: Signer,
   domain: TypedDataDomain,
   types: TypedDataTypes,
   data: Record<string, unknown>,
-): Promise<string> {
-  let signature: string | null = null;
+): Promise<EcdsaSignature> {
+  let scheme: EcdsaSignature["scheme"];
+  let signature: string;
 
-  switch (scheme) {
+  switch (ecdsaScheme) {
     case SigningScheme.EIP712:
       if (!isTypedDataSigner(owner)) {
         throw new Error("signer does not support signing typed data");
       }
+      scheme = SigningScheme.EIP712;
       signature = await owner._signTypedData(domain, types, data);
       break;
     case SigningScheme.ETHSIGN:
+      scheme = SigningScheme.ETHSIGN;
       signature = await owner.signMessage(
         ethers.utils.arrayify(hashTypedData(domain, types, data)),
       );
+      break;
+    case EcdsaSigningSchemeEx.PERSONALSIGN:
+      if (!isJsonRpcSignerLike(owner)) {
+        throw new Error("signer does not support raw JSON RPC requests");
+      }
+      scheme = SigningScheme.ETHSIGN;
+      signature = await owner.provider.send("personal_sign", [
+        ethers.utils.hexlify(hashTypedData(domain, types, data)),
+        await owner.getAddress(),
+        "",
+      ]);
       break;
     default:
       throw new Error("invalid signing scheme");
@@ -149,7 +176,11 @@ async function ecdsaSignTypedData(
   // Passing the signature through split/join to normalize the `v` byte.
   // Some wallets do not pad it with `27`, which causes a signature failure
   // `splitSignature` pads it if needed, and `joinSignature` simply puts it back together
-  return ethers.utils.joinSignature(ethers.utils.splitSignature(signature));
+  const signatureData = ethers.utils.joinSignature(
+    ethers.utils.splitSignature(signature),
+  );
+
+  return { scheme, data: signatureData };
 }
 
 /**
@@ -166,22 +197,19 @@ async function ecdsaSignTypedData(
  * details.
  * @return Encoded signature including signing scheme for the order.
  */
-export async function signOrder(
+export function signOrder(
   domain: TypedDataDomain,
   order: Order,
   owner: Signer,
-  scheme: EcdsaSigningScheme,
+  scheme: EcdsaSigningScheme | EcdsaSigningSchemeEx,
 ): Promise<EcdsaSignature> {
-  return {
+  return ecdsaSignTypedData(
     scheme,
-    data: await ecdsaSignTypedData(
-      scheme,
-      owner,
-      domain,
-      { Order: ORDER_TYPE_FIELDS },
-      normalizeOrder(order),
-    ),
-  };
+    owner,
+    domain,
+    { Order: ORDER_TYPE_FIELDS },
+    normalizeOrder(order),
+  );
 }
 
 /**
@@ -195,22 +223,19 @@ export async function signOrder(
  * details.
  * @return Encoded signature including signing scheme for the cancellation.
  */
-export async function signOrderCancellation(
+export function signOrderCancellation(
   domain: TypedDataDomain,
   orderUid: BytesLike,
   owner: Signer,
-  scheme: EcdsaSigningScheme,
+  scheme: EcdsaSigningScheme | EcdsaSigningSchemeEx,
 ): Promise<EcdsaSignature> {
-  return {
+  return ecdsaSignTypedData(
     scheme,
-    data: await ecdsaSignTypedData(
-      scheme,
-      owner,
-      domain,
-      { OrderCancellation: CANCELLATION_TYPE_FIELDS },
-      { orderUid },
-    ),
-  };
+    owner,
+    domain,
+    { OrderCancellation: CANCELLATION_TYPE_FIELDS },
+    { orderUid },
+  );
 }
 
 /**

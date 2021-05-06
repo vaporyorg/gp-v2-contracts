@@ -2,9 +2,11 @@ import { joinSignature } from "@ethersproject/bytes";
 import { hashMessage } from "@ethersproject/hash";
 import { SigningKey } from "@ethersproject/signing-key";
 import { expect } from "chai";
+import { Wallet, providers } from "ethers";
 import { ethers, waffle } from "hardhat";
 
 import {
+  EcdsaSigningSchemeEx,
   SigningScheme,
   signOrderCancellation,
   hashOrderCancellation,
@@ -29,6 +31,23 @@ const patchedSignMessageBuilder = (key: SigningKey) => async (
   );
 };
 
+function patchSignerWithPersonalSign(signer: Wallet) {
+  const provider = signer.provider as providers.JsonRpcProvider;
+
+  // The Hardhat `ethers` signer does not support `personal_sign`, so patch it
+  // to use `eth_sign` instead. Note that `personal_sign` inverts the order of
+  // parameters compared to `eth_sign`.
+  const send = provider.send.bind(provider);
+  provider.send = (method: string, params: unknown[]) => {
+    if (method === "personal_sign") {
+      const [message, address, password] = params;
+      expect(password).to.not.be.undefined;
+      return send("eth_sign", [address, message]);
+    }
+    return send(method, params);
+  };
+}
+
 describe("signOrder", () => {
   it("should pad the `v` byte when needed", async () => {
     const [signer] = waffle.provider.getWallets();
@@ -50,6 +69,28 @@ describe("signOrder", () => {
       // Confirm it is either 27 or 28, in hex
       expect(v).to.be.oneOf(["0x1b", "0x1c"]);
     }
+  });
+
+  it.only("should produce the same signature with `eth_sign` and `personal_sign`", async () => {
+    const [signer] = waffle.provider.getWallets();
+    patchSignerWithPersonalSign(signer);
+
+    const domain = { name: "test" };
+
+    const { data: ethsignSignature } = await signOrder(
+      domain,
+      SAMPLE_ORDER,
+      signer,
+      SigningScheme.ETHSIGN,
+    );
+    const { data: personalsignSignature } = await signOrder(
+      domain,
+      SAMPLE_ORDER,
+      signer,
+      EcdsaSigningSchemeEx.PERSONALSIGN,
+    );
+
+    expect(ethsignSignature).to.equal(personalsignSignature);
   });
 });
 
